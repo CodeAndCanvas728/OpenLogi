@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-09-18
+
+### Fixed
+
+- *(cli)* tell a timed-out profile capture what to do next
+- *(ipc)* start the handshake deadline before the socket is reached
+- *(cli)* stop naming the agent lock file outside its owner
+- *(gui)* keep the relaunch notice ahead of the unreachable one
+- *(gui)* hold a config reload until the agent connects
+
 ## [0.8.5] - 2026-09-16
 
 ### Added
