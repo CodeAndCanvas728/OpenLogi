@@ -52,7 +52,16 @@ pub(crate) async fn bootstrap(config: Config) -> Option<Core> {
     // hook facts are published by the select loop, which owns the hook.
     let observable = Arc::new(ObservableState::new(env!("CARGO_PKG_VERSION").to_string()));
     #[cfg(target_os = "macos")]
-    seed_permission_facts(&observable);
+    {
+        seed_permission_facts(&observable);
+        // The previous run's freeze exit, if it left a marker: serve it to
+        // clients and post the notification. Consumed here — once — so the
+        // news is reported by exactly one agent run.
+        if let Some(report) = openlogi_agent_core::freeze_exit::take_marker() {
+            observable.set_last_freeze_exit(Some(report.clone()));
+            crate::freeze_notice::post_freeze_notice(&report);
+        }
+    }
     let orchestrator = Arc::new(Mutex::new(Orchestrator::new(
         config,
         Arc::clone(&observable),

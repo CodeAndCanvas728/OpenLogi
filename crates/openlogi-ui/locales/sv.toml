@@ -412,6 +412,14 @@ device_scanning_is_unavailable = "Enhetssökning är inte tillgänglig"
 device_scan_failure_description = "Bakgrundstjänsten kunde inte söka efter enheter. Se dess logg för mer information."
 agent_restarted_during_pairing = "Bakgrundstjänsten startades om. Försök para ihop igen."
 
+[freeze_exit.banner]
+message = "OpenLogi startades om efter att hanteringen av inmatning slutade svara. Dina enheter och inställningar är oförändrade."
+dismiss = "Stäng"
+
+[freeze_exit.notification]
+title = "OpenLogi har startats om"
+body = "Hanteringen av inmatning slutade svara, så OpenLogi startade om sig självt. Dina enheter och inställningar är oförändrade."
+
 [updates]
 check_for_updates_dialog = "Sök efter uppdateringar…"
 download_install = "Hämta och installera"

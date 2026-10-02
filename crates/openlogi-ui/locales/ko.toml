@@ -412,6 +412,14 @@ device_scanning_is_unavailable = "기기 검색을 사용할 수 없습니다"
 device_scan_failure_description = "백그라운드 서비스가 기기를 검색하지 못했습니다. 자세한 내용은 로그를 확인하세요."
 agent_restarted_during_pairing = "백그라운드 서비스가 다시 시작되었습니다. 페어링을 다시 시도하세요."
 
+[freeze_exit.banner]
+message = "입력 처리가 응답하지 않아 OpenLogi를 다시 시작했습니다. 기기와 설정은 변경되지 않았습니다."
+dismiss = "닫기"
+
+[freeze_exit.notification]
+title = "OpenLogi를 다시 시작했습니다"
+body = "입력 처리가 응답하지 않아 OpenLogi가 자동으로 다시 시작했습니다. 기기와 설정은 변경되지 않았습니다."
+
 [updates]
 check_for_updates_dialog = "업데이트 확인…"
 download_install = "다운로드 및 설치"

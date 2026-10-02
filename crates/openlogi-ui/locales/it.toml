@@ -412,6 +412,14 @@ device_scanning_is_unavailable = "La ricerca dei dispositivi non è disponibile"
 device_scan_failure_description = "Il servizio in background non è riuscito a cercare i dispositivi. Controlla il suo log per i dettagli."
 agent_restarted_during_pairing = "Il servizio in background è stato riavviato. Riprova l'abbinamento."
 
+[freeze_exit.banner]
+message = "OpenLogi è stato riavviato dopo che la gestione dell'input ha smesso di rispondere. I tuoi dispositivi e le impostazioni non sono cambiati."
+dismiss = "Ignora"
+
+[freeze_exit.notification]
+title = "OpenLogi è stato riavviato"
+body = "La gestione dell'input ha smesso di rispondere, quindi OpenLogi si è riavviato. I tuoi dispositivi e le impostazioni non sono cambiati."
+
 [updates]
 check_for_updates_dialog = "Controlla aggiornamenti…"
 download_install = "Scarica e installa"

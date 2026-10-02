@@ -412,6 +412,14 @@ device_scanning_is_unavailable = "Enhedsscanning er ikke tilgængelig"
 device_scan_failure_description = "Baggrundstjenesten kunne ikke scanne efter enheder. Se dens log for detaljer."
 agent_restarted_during_pairing = "Baggrundstjenesten blev genstartet. Prøv at parre igen."
 
+[freeze_exit.banner]
+message = "OpenLogi genstartede, efter at behandlingen af input stoppede med at svare. Dine enheder og indstillinger er uændrede."
+dismiss = "Afvis"
+
+[freeze_exit.notification]
+title = "OpenLogi er genstartet"
+body = "Behandlingen af input stoppede med at svare, så OpenLogi genstartede sig selv. Dine enheder og indstillinger er uændrede."
+
 [updates]
 check_for_updates_dialog = "Søg efter opdateringer…"
 download_install = "Download og installer"

@@ -412,6 +412,14 @@ device_scanning_is_unavailable = "Cihaz taraması kullanılamıyor"
 device_scan_failure_description = "Arka plan hizmeti cihazları tarayamadı. Ayrıntılar için günlüğüne bakın."
 agent_restarted_during_pairing = "Arka plan hizmeti yeniden başladı. Eşleştirmeyi tekrar deneyin."
 
+[freeze_exit.banner]
+message = "Giriş işleme yanıt vermeyi kestiğinden OpenLogi yeniden başlatıldı. Cihazlarınız ve ayarlarınız değişmedi."
+dismiss = "Kapat"
+
+[freeze_exit.notification]
+title = "OpenLogi yeniden başlatıldı"
+body = "Giriş işleme yanıt vermeyi kesti, bu yüzden OpenLogi kendini yeniden başlattı. Cihazlarınız ve ayarlarınız değişmedi."
+
 [updates]
 check_for_updates_dialog = "Güncellemeleri Denetle…"
 download_install = "İndir ve Kur"

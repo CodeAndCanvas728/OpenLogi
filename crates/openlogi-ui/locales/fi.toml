@@ -412,6 +412,14 @@ device_scanning_is_unavailable = "Laitteiden haku ei ole käytettävissä"
 device_scan_failure_description = "Taustapalvelu ei voinut hakea laitteita. Katso lisätiedot sen lokista."
 agent_restarted_during_pairing = "Taustapalvelu käynnistyi uudelleen. Yritä pariliitosta uudelleen."
 
+[freeze_exit.banner]
+message = "OpenLogi käynnistyi uudelleen, kun syötteen käsittely lakkasi reagoimasta. Laitteesi ja asetuksesi ovat muuttumattomia."
+dismiss = "Hylkää"
+
+[freeze_exit.notification]
+title = "OpenLogi käynnistyi uudelleen"
+body = "Syötteen käsittely lakkasi reagoimasta, joten OpenLogi käynnisti itsensä uudelleen. Laitteesi ja asetuksesi ovat muuttumattomia."
+
 [updates]
 check_for_updates_dialog = "Tarkista päivitykset…"
 download_install = "Lataa ja asenna"

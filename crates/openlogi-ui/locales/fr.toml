@@ -412,6 +412,14 @@ device_scanning_is_unavailable = "La recherche d’appareils est indisponible"
 device_scan_failure_description = "Le service d’arrière-plan n’a pas pu rechercher d’appareils. Consultez son journal pour plus de détails."
 agent_restarted_during_pairing = "Le service d’arrière-plan a redémarré. Réessayez l’association."
 
+[freeze_exit.banner]
+message = "OpenLogi a redémarré après que la gestion des entrées a cessé de répondre. Vos périphériques et réglages sont inchangés."
+dismiss = "Ignorer"
+
+[freeze_exit.notification]
+title = "OpenLogi a redémarré"
+body = "La gestion des entrées a cessé de répondre, OpenLogi a donc redémarré. Vos périphériques et réglages sont inchangés."
+
 [updates]
 check_for_updates_dialog = "Rechercher des mises à jour…"
 download_install = "Télécharger et installer"

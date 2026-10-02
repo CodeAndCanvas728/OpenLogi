@@ -412,6 +412,14 @@ device_scanning_is_unavailable = "Apparaten zoeken is niet beschikbaar"
 device_scan_failure_description = "De achtergrondservice kon niet naar apparaten zoeken. Raadpleeg het logboek voor details."
 agent_restarted_during_pairing = "De achtergrondservice is opnieuw gestart. Probeer het koppelen opnieuw."
 
+[freeze_exit.banner]
+message = "OpenLogi is opnieuw gestart nadat de verwerking van invoer niet meer reageerde. Je apparaten en instellingen zijn ongewijzigd."
+dismiss = "Sluiten"
+
+[freeze_exit.notification]
+title = "OpenLogi is opnieuw gestart"
+body = "De verwerking van invoer reageerde niet meer, dus OpenLogi heeft zichzelf opnieuw gestart. Je apparaten en instellingen zijn ongewijzigd."
+
 [updates]
 check_for_updates_dialog = "Controleer op updates…"
 download_install = "Downloaden en installeren"

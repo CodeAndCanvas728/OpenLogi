@@ -412,6 +412,14 @@ device_scanning_is_unavailable = "裝置掃描無法使用"
 device_scan_failure_description = "背景服務無法掃描裝置，詳情請查看其日誌。"
 agent_restarted_during_pairing = "背景服務已重新啟動，請再試一次配對。"
 
+[freeze_exit.banner]
+message = "輸入處理停止回應後，OpenLogi 已重新啟動。你的裝置與設定沒有變更。"
+dismiss = "關閉"
+
+[freeze_exit.notification]
+title = "OpenLogi 已重新啟動"
+body = "輸入處理停止回應，OpenLogi 已自動重新啟動。你的裝置與設定沒有變更。"
+
 [updates]
 check_for_updates_dialog = "檢查更新…"
 download_install = "下載並安裝"

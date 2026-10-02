@@ -412,6 +412,14 @@ device_scanning_is_unavailable = "デバイススキャンを利用できませ�
 device_scan_failure_description = "バックグラウンドサービスでデバイスを検索できませんでした。詳しくはログを確認してください。"
 agent_restarted_during_pairing = "バックグラウンドサービスが再起動しました。もう一度ペアリングしてください。"
 
+[freeze_exit.banner]
+message = "入力の処理が応答しなくなったため、OpenLogi を再起動しました。デバイスと設定は変更されていません。"
+dismiss = "閉じる"
+
+[freeze_exit.notification]
+title = "OpenLogi を再起動しました"
+body = "入力の処理が応答しなくなったため、OpenLogi は自動的に再起動しました。デバイスと設定は変更されていません。"
+
 [updates]
 check_for_updates_dialog = "アップデートを確認…"
 download_install = "ダウンロードしてインストール"

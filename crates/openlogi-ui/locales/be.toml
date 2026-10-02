@@ -412,6 +412,14 @@ device_scanning_is_unavailable = "Сканаванне прылад недаст
 device_scan_failure_description = "Фонавай службе не ўдалося прасканаваць прылады. Падрабязнасці глядзіце ў яе журнале."
 agent_restarted_during_pairing = "Фонавая служба перазапушчана. Паспрабуйце спалучыць яшчэ раз."
 
+[freeze_exit.banner]
+message = "OpenLogi перазапушчаны пасля таго, як апрацоўка ўводу спыніла адказваць. Вашы прылады і налады не змяніліся."
+dismiss = "Схаваць"
+
+[freeze_exit.notification]
+title = "OpenLogi перазапушчаны"
+body = "Апрацоўка ўводу спыніла адказваць, таму OpenLogi перазапушчаны аўтаматычна. Вашы прылады і налады не змяніліся."
+
 [updates]
 check_for_updates_dialog = "Праверыць наяўнасць абнаўленняў…"
 download_install = "Спампаваць і ўсталяваць"

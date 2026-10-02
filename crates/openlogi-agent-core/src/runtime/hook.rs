@@ -453,6 +453,12 @@ pub fn start(
     // Actions never run on the tap callback thread (HID CGEventTap freeze hazard).
     let action_tx = spawn_action_worker(dispatcher.clone());
 
+    // The macOS watchdogs report a freeze exit through the marker/respawn
+    // path before force-exiting. Re-registered on every hook start, and the
+    // first registration in a process wins (it is the same function item).
+    #[cfg(target_os = "macos")]
+    crate::freeze_exit::register();
+
     // The per-hold pointer accumulator lives in the thread-local `HOLD`; the
     // callback must never block — see the freeze-hazard note in `macos.rs`.
     let result = Hook::start(move |event| match event {

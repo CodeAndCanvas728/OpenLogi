@@ -5535,6 +5535,7 @@ dependencies = [
 name = "openlogi-agent"
 version = "0.8.10"
 dependencies = [
+ "block2 0.6.2",
  "dispatch2",
  "embed-resource",
  "futures",
@@ -5547,6 +5548,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-io-kit",
  "objc2-security",
+ "objc2-user-notifications",
  "opener",
  "openlogi-agent-core",
  "openlogi-core",
@@ -5583,6 +5585,7 @@ dependencies = [
  "openlogi-hook",
  "openlogi-inject",
  "openlogi-ipc",
+ "serde_json",
  "tokio",
  "tracing",
 ]

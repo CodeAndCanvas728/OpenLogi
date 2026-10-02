@@ -57,6 +57,8 @@ objc2-core-graphics = { workspace = true, features = ["CGSession"] }
 objc2-foundation = { workspace = true, features = ["NSString", "NSData", "NSArray", "NSNotification"] }
 objc2-io-kit = { workspace = true }
 objc2-security = { workspace = true, features = ["AuthSession"] }
+objc2-user-notifications = { workspace = true, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationContent", "UNNotificationRequest", "UNNotificationTrigger"] }
+block2 = { workspace = true }
 openlogi-inject = { path = "../openlogi-inject" }
 
 [target.'cfg(target_os = "linux")'.dependencies]

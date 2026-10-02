@@ -412,6 +412,14 @@ device_scanning_is_unavailable = "Skanowanie urządzeń jest niedostępne"
 device_scan_failure_description = "Usługa działająca w tle nie mogła przeskanować urządzeń. Szczegóły znajdziesz w jej dzienniku."
 agent_restarted_during_pairing = "Usługa działająca w tle została uruchomiona ponownie. Spróbuj sparować jeszcze raz."
 
+[freeze_exit.banner]
+message = "OpenLogi uruchomiło się ponownie po tym, jak przetwarzanie wejścia przestało reagować. Twoje urządzenia i ustawienia pozostały bez zmian."
+dismiss = "Zamknij"
+
+[freeze_exit.notification]
+title = "OpenLogi uruchomiło się ponownie"
+body = "Przetwarzanie wejścia przestało reagować, więc OpenLogi uruchomiło się ponownie. Twoje urządzenia i ustawienia pozostały bez zmian."
+
 [updates]
 check_for_updates_dialog = "Sprawdź dostępność aktualizacji…"
 download_install = "Pobierz i zainstaluj"

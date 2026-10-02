@@ -14,6 +14,8 @@ pub mod action_ring;
 pub mod capture_plan;
 mod dpi;
 pub mod event_monitor;
+#[cfg(target_os = "macos")]
+pub mod freeze_exit;
 pub mod hardware;
 pub mod observable;
 pub mod orchestrator;

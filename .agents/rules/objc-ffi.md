@@ -5,6 +5,7 @@ paths:
   - "crates/openlogi-permissions/**"
   - "crates/openlogi-camera/**"
   - "crates/openlogi-agent/src/activity_macos.rs"
+  - "crates/openlogi-agent/src/freeze_notice.rs"
   - "crates/openlogi-agent/src/tray.rs"
   - "crates/openlogi-agent/src/status_item.rs"
   - "crates/openlogi-agent/src/lifecycle/armed_session.rs"
@@ -27,6 +28,7 @@ files; **keep this table in sync when you add or move one**:
 | File | What it carries |
 |---|---|
 | `openlogi-agent/src/activity_macos.rs` | the device-I/O gate's levels: the `IOPMConnection` powerd subscription (hand-declared SPI, see below) and the `CGSessionCopyCurrentDictionary` console read |
+| `openlogi-agent/src/freeze_notice.rs` | the `UNUserNotificationCenter` freeze-exit notification: lazy authorization + `UNNotificationRequest` delivery |
 | `openlogi-agent/src/status_item.rs` | safe `objc2` wrappers over `NSStatusItem` / `NSMenu` / `NSMenuItem` |
 | `openlogi-agent/src/tray.rs` | the menu-bar semantics, `MenuTarget` + `SessionTarget` (`define_class!`), the Accessory `NSApplication` loop, the `NSWorkspace` session (fast-user-switch) notifications |
 | `openlogi-agent-core/src/watchers/camera.rs` | the CoreMediaIO "camera is running" property read |
@@ -134,6 +136,7 @@ is its own framework call, so "the TCC layer" is just this table:
 | Input Monitoring / Post Event | `objc2-io-kit` (`hidsystem`) | `IOHIDCheckAccess` / `IOHIDRequestAccess` | read in `openlogi-permissions`, prompt in `openlogi-hid` |
 | Bluetooth | `objc2` class lookup (see below) | `+[CBManager authorization]` | `openlogi-permissions` |
 | Camera / microphone | `openlogi-camera` (`capture_macos.rs`) | `+[AVCaptureDevice authorizationStatusForMediaType:]` / `requestAccessForMediaType:` | `openlogi-camera` |
+| Notifications | `objc2-user-notifications` | `-[UNUserNotificationCenter requestAuthorizationWithOptions:completionHandler:]` | requested lazily by `openlogi-agent`'s `freeze_notice.rs`, only when there is a freeze exit to report |
 | Screen Recording (unused) | `objc2-core-graphics` | `CGPreflightScreenCaptureAccess` | — |
 | Full Disk Access (unused) | — | no API; only a probe of a protected path | — |
 
@@ -337,7 +340,8 @@ framework crates, then verify that `Cargo.lock` still carries one version-aligne
 Every ObjC / Core-framework crate is declared **once** in the workspace table —
 `objc2`, `objc2-app-kit`, `objc2-foundation`, `objc2-core-foundation`,
 `objc2-core-graphics`, `objc2-application-services`, `objc2-io-kit`,
-`objc2-service-management`, `objc2-security`, `block2`, `core-graphics`, `core-foundation`. The header-gated ones carry
+`objc2-service-management`, `objc2-security`, `objc2-user-notifications`,
+`block2`, `core-graphics`, `core-foundation`. The header-gated ones carry
 `default-features = false` there, and each member inherits with
 `workspace = true` and adds only the feature modules it uses. A new one belongs
 in that table too, never inline in a member manifest: the unified version is what

@@ -412,6 +412,14 @@ device_scanning_is_unavailable = "Device scanning is unavailable"
 device_scan_failure_description = "The background service couldn't scan for devices. Check its log for details."
 agent_restarted_during_pairing = "The background service restarted. Try pairing again."
 
+[freeze_exit.banner]
+message = "OpenLogi restarted after input handling stopped responding. Your devices and settings are unchanged."
+dismiss = "Dismiss"
+
+[freeze_exit.notification]
+title = "OpenLogi restarted"
+body = "Input handling stopped responding, so OpenLogi restarted itself. Your devices and settings are unchanged."
+
 [updates]
 check_for_updates_dialog = "Check for Updates…"
 download_install = "Download & Install"

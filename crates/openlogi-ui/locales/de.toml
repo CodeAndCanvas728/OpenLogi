@@ -412,6 +412,14 @@ device_scanning_is_unavailable = "Gerätesuche nicht verfügbar"
 device_scan_failure_description = "Der Hintergrunddienst konnte nicht nach Geräten suchen – Details stehen in seinem Protokoll."
 agent_restarted_during_pairing = "Der Hintergrunddienst wurde neu gestartet – versuche das Koppeln erneut."
 
+[freeze_exit.banner]
+message = "OpenLogi wurde neu gestartet, nachdem die Eingabeverarbeitung nicht mehr reagierte. Ihre Geräte und Einstellungen sind unverändert."
+dismiss = "Ausblenden"
+
+[freeze_exit.notification]
+title = "OpenLogi wurde neu gestartet"
+body = "Die Eingabeverarbeitung hat nicht mehr reagiert, daher hat OpenLogi sich selbst neu gestartet. Ihre Geräte und Einstellungen sind unverändert."
+
 [updates]
 check_for_updates_dialog = "Nach Updates suchen…"
 download_install = "Herunterladen und installieren"

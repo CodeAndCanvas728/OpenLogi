@@ -412,6 +412,14 @@ device_scanning_is_unavailable = "A procura de dispositivos está indisponível"
 device_scan_failure_description = "O serviço em segundo plano não conseguiu procurar dispositivos. Consulte o respetivo registo para mais detalhes."
 agent_restarted_during_pairing = "O serviço em segundo plano foi reiniciado. Tente emparelhar novamente."
 
+[freeze_exit.banner]
+message = "O OpenLogi reiniciou depois de o processamento da entrada deixar de responder. Os seus dispositivos e definições não mudaram."
+dismiss = "Dispensar"
+
+[freeze_exit.notification]
+title = "O OpenLogi reiniciou"
+body = "O processamento da entrada deixou de responder, por isso o OpenLogi reiniciou. Os seus dispositivos e definições não mudaram."
+
 [updates]
 check_for_updates_dialog = "Procurar atualizações…"
 download_install = "Transferir e instalar"
