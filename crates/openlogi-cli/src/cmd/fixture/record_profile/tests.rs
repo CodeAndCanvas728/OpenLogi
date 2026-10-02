@@ -379,6 +379,7 @@ fn fixture_agent() -> TestAgent {
             agent_version: "/private/Agent.app".to_string(),
             input_monitoring_granted: false,
             hid_open_failures: true,
+            last_freeze_exit: None,
         },
         inventory: profile.inventories.clone(),
         standalone: profile.standalone.clone(),

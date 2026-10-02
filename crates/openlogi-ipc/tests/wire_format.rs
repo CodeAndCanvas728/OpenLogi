@@ -47,8 +47,8 @@ use openlogi_core::hid::{
 use openlogi_ipc::{
     ActionRingCommandError, ActionRingInvocation, ActionRingPresentation, AgentRequest,
     AgentSnapshot, AgentStatus, ClientKind, ConfigReloadError, ForegroundApps, FoundDevice,
-    Identity, InventoryHealth, MonitorEvent, Observation, PROTOCOL_VERSION, PairingCommandError,
-    PairingFailure, PairingPhase, PairingUpdate, RingObservation,
+    FreezeExitReport, Identity, InventoryHealth, MonitorEvent, Observation, PROTOCOL_VERSION,
+    PairingCommandError, PairingFailure, PairingPhase, PairingUpdate, RingObservation,
 };
 use succession::{Compat, Run};
 
@@ -102,7 +102,7 @@ fn representative_smartshift_status() -> SmartShiftStatus {
 /// that makes that visible in the same diff.
 #[test]
 fn protocol_version_is_pinned() {
-    assert_eq!(PROTOCOL_VERSION, 34);
+    assert_eq!(PROTOCOL_VERSION, 35);
 }
 
 #[test]
@@ -352,8 +352,21 @@ fn agent_status() {
         agent_version: "0.6.6".into(),
         input_monitoring_granted: true,
         hid_open_failures: false,
+        last_freeze_exit: None,
     };
-    assert_wire(&status, "010001010705302e362e360100");
+    assert_wire(&status, "010001010705302e362e36010000");
+
+    // The appended report pins both the `None` above and a populated one, so
+    // a future field appended after it moves a byte this test names.
+    assert_wire(
+        &FreezeExitReport {
+            reason: "tap_thread_stalled".into(),
+            segment: "run_loop_slice".into(),
+            unix_time: 42,
+            elapsed_ms: 1617,
+        },
+        "127461705f7468726561645f7374616c6c65640e72756e5f6c6f6f705f736c6963652afb5106",
+    );
 
     assert_wire(&InventoryHealth::Scanning, "00");
     assert_wire(&InventoryHealth::Ready, "01");
@@ -372,6 +385,7 @@ fn agent_snapshot() {
             agent_version: "0.6.6".into(),
             input_monitoring_granted: true,
             hid_open_failures: false,
+            last_freeze_exit: None,
         },
         inventory: Vec::new(),
         standalone: Vec::new(),
@@ -381,14 +395,14 @@ fn agent_snapshot() {
         // pairing fields.
         foreground: ForegroundApps::default(),
     };
-    assert_wire(&snapshot, "010001010705302e362e360100000000000000");
+    assert_wire(&snapshot, "010001010705302e362e36010000000000000000");
 
     // The observation is the snapshot with its generation in front.
     let observed = Observation {
         generation: 3,
         snapshot,
     };
-    assert_wire(&observed, "03010001010705302e362e360100000000000000");
+    assert_wire(&observed, "03010001010705302e362e36010000000000000000");
 }
 
 /// The foreground application rides the snapshot, so both halves are pinned:

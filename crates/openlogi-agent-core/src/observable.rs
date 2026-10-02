@@ -19,8 +19,8 @@ use openlogi_core::brand::is_openlogi_foreground_id;
 use openlogi_core::device::{DeviceInventory, StandaloneDevice};
 use openlogi_hook::Hook;
 use openlogi_ipc::{
-    AgentSnapshot, AgentStatus, ForegroundApps, FoundDevice, Generation, InventoryHealth,
-    OBSERVE_HOLD, Observation, PROTOCOL_VERSION, PairingPhase, RECENT_APPS,
+    AgentSnapshot, AgentStatus, ForegroundApps, FoundDevice, FreezeExitReport, Generation,
+    InventoryHealth, OBSERVE_HOLD, Observation, PROTOCOL_VERSION, PairingPhase, RECENT_APPS,
 };
 use tokio::sync::watch;
 
@@ -54,6 +54,7 @@ impl ObservableState {
                     agent_version,
                     input_monitoring_granted: openlogi_hid::permissions::has_access(),
                     hid_open_failures: false,
+                    last_freeze_exit: None,
                 },
                 inventory: Vec::new(),
                 standalone: Vec::new(),
@@ -191,6 +192,20 @@ impl ObservableState {
                 return false;
             }
             snapshot.status.input_monitoring_granted = granted;
+            true
+        });
+    }
+
+    /// Publish the freeze-hazard exit the previous agent run recorded, read
+    /// once from the marker this run started with. Serving the same value on
+    /// every observation keeps it readable until this run ends; the GUI
+    /// remembers which report it has already shown.
+    pub fn set_last_freeze_exit(&self, report: Option<FreezeExitReport>) {
+        self.update(|snapshot| {
+            if snapshot.status.last_freeze_exit == report {
+                return false;
+            }
+            snapshot.status.last_freeze_exit = report;
             true
         });
     }

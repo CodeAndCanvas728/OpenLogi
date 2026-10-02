@@ -67,7 +67,10 @@ pub use succession::Identity;
 ///      `HidppOperation::ReadFnLock` appended.
 /// v33: `Agent::unpair_device` appended.
 /// v34: `KeyCombo` gains the Super modifier bit (`Super`, `Win`, `Meta`).
-pub const PROTOCOL_VERSION: u32 = 34;
+/// v35: `AgentStatus::last_freeze_exit` appended — the freeze-hazard exit the
+///      previous agent run force-exited with, so the GUI can report it instead
+///      of the restart looking like nothing happened.
+pub const PROTOCOL_VERSION: u32 = 35;
 
 /// Environment variable through which the agent hands a supervised helper the
 /// run token it will serve, so the helper knows which agent it belongs to
@@ -124,6 +127,32 @@ pub struct AgentStatus {
     /// node. Paired with [`Self::input_monitoring_granted`] it distinguishes
     /// a missing grant from an exclusive open or a stale permission session.
     pub hid_open_failures: bool,
+    /// The freeze-hazard exit the previous agent run died with, when the
+    /// startup that produced this status found such a marker. `None` for a
+    /// run that started normally. The agent serves the same value until the
+    /// run ends; remembering which report has been dismissed is the GUI's
+    /// job, not the wire's.
+    pub last_freeze_exit: Option<FreezeExitReport>,
+}
+
+/// A freeze-hazard exit of the previous agent run, as recorded on disk by the
+/// exiting process and read back by its successor.
+///
+/// `reason` and `segment` are the stable strings the hook's
+/// `FreezeExitReason::as_str` / `TapSegment::as_str` produce — carried as
+/// strings because the segment vocabulary grows with the hook's diagnostics
+/// and a report must render unknown future values rather than fail to decode.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FreezeExitReport {
+    /// Why the watchdog force-exited (`tap_thread_stalled`, `stop_timed_out`,
+    /// `callback_stuck`).
+    pub reason: String,
+    /// The last blocking call the tap thread entered (`run_loop_slice`, …).
+    pub segment: String,
+    /// Whole seconds since the Unix epoch when the exit happened.
+    pub unix_time: u64,
+    /// Milliseconds of uptime between the stall beginning and the exit.
+    pub elapsed_ms: u64,
 }
 
 /// Status and inventory as one poll result. Kept together so the GUI never

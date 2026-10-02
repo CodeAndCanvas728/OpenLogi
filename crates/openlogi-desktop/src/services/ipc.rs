@@ -525,6 +525,7 @@ mod tests {
                 agent_version: "observe-loop-test".to_owned(),
                 input_monitoring_granted: true,
                 hid_open_failures: false,
+                last_freeze_exit: None,
             },
             inventory: Vec::new(),
             standalone: Vec::new(),
