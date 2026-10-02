@@ -44,6 +44,13 @@ pub use pointer::{
     pointer_target_is_focused,
 };
 
+#[cfg(target_os = "macos")]
+mod freeze;
+#[cfg(target_os = "macos")]
+pub use freeze::{
+    FreezeExit, FreezeExitHandlerInstalled, FreezeExitReason, set_freeze_exit_handler,
+};
+
 /// Logitech's USB/Bluetooth vendor id (`0x046D`), widened from
 /// [`openlogi_core::hid::LOGITECH_VENDOR_ID`] because the hook's identity
 /// sources (IOKit, evdev) hand it back as a `u32`.

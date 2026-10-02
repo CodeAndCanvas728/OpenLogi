@@ -41,7 +41,7 @@ use translate::{translate, translate_key};
 use watchdog::{
     CALLBACK_POLL_INTERVAL, CallbackActivity, CallbackWatchdog, LIFECYCLE_POLL_INTERVAL,
     LifecycleDecision, LifecycleExitReason, LifecycleObservation, LifecycleWatchdog, PowerEpoch,
-    RearmBudget, TapPhase, WatchdogSignals,
+    RearmBudget, TapPhase, TapSegment, WatchdogSignals,
 };
 
 /// Everything `Hook` needs to control the background thread.
@@ -359,9 +359,16 @@ fn spawn_callback_watchdog(
                 error!(
                     stalled_ms = duration_millis(stuck.stalled),
                     watched_ms = duration_millis(stuck.watched),
+                    segment = ?signals.segment(),
                     "OS mouse-hook callback stuck past budget — exiting agent to \
                      restore system input (HID CGEventTap freeze hazard)"
                 );
+                crate::freeze::notify(crate::FreezeExit {
+                    reason: crate::FreezeExitReason::CallbackStuck,
+                    segment: signals.segment().as_str(),
+                    elapsed_ms: duration_millis(stuck.stalled),
+                    stop_requested: signals.stop_requested(),
+                });
                 // A live callback owns the tap thread, so no in-process
                 // teardown can make progress. Process death releases its Mach
                 // port and removes the tap from the system event chain.
@@ -462,6 +469,19 @@ fn spawn_lifecycle_watchdog(
                         if !still_hazardous {
                             continue;
                         }
+                        let freeze_exit = crate::FreezeExit {
+                            reason: match reason {
+                                LifecycleExitReason::TapThreadStalled => {
+                                    crate::FreezeExitReason::TapThreadStalled
+                                }
+                                LifecycleExitReason::StopTimedOut => {
+                                    crate::FreezeExitReason::StopTimedOut
+                                }
+                            },
+                            segment: signals.segment().as_str(),
+                            elapsed_ms: duration_millis(stalled),
+                            stop_requested: signals.stop_requested(),
+                        };
                         let reason = match reason {
                             LifecycleExitReason::TapThreadStalled if phase == TapPhase::Arming => {
                                 "HID tap creation or activation stopped making progress"
@@ -484,9 +504,11 @@ fn spawn_lifecycle_watchdog(
                             stalled_ms = duration_millis(stalled),
                             watched_ms = duration_millis(watched),
                             ?phase,
+                            segment = ?signals.segment(),
                             "HID CGEventTap lifecycle did not make progress before deadline — \
                              exiting agent to restore system input"
                         );
+                        crate::freeze::notify(freeze_exit);
                         #[expect(
                             clippy::exit,
                             reason = "the tap thread is wedged (TCC revocation can stall it inside CoreGraphics), so no unwinding path can reach it from this watchdog thread; a live HID tap left behind freezes all input until the process dies"
@@ -529,6 +551,7 @@ fn service_tap(
             break;
         }
         signals.mark_tap_progress();
+        enter_segment(signals, TapSegment::RunLoopSlice);
         match CFRunLoop::run_in_mode(
             // SAFETY: framework-provided static CFStringRef, 'static.
             unsafe { kCFRunLoopDefaultMode },
@@ -546,17 +569,21 @@ fn service_tap(
         // budget force-exited a perfectly healthy agent (#952). The capability
         // probe itself runs only when the cue says the grant may have changed.
         signals.set_phase(TapPhase::Probing);
-        if probe.take() && !Backend::has_accessibility() {
-            warn!(
-                "Accessibility revoked while the event tap was live — \
-                 disabling the tap to avoid wedging system input"
-            );
-            break;
+        if probe.take() {
+            enter_segment(signals, TapSegment::AxProbe);
+            if !Backend::has_accessibility() {
+                warn!(
+                    "Accessibility revoked while the event tap was live — \
+                     disabling the tap to avoid wedging system input"
+                );
+                break;
+            }
         }
         // Observe both disable signals: the callback catches the documented
         // TapDisabledBy* notification, while the port state catches the
         // sleep/wake edge where CoreGraphics disables the tap without one.
         // Either one consumes the same bounded re-arm budget.
+        enter_segment(signals, TapSegment::TapStateQuery);
         let was_disabled = tap_disabled.swap(false, Ordering::AcqRel) || !tap_is_enabled(tap);
         if was_disabled && !rearm.allow(signals.now()) {
             error!(
@@ -567,6 +594,7 @@ fn service_tap(
         }
         // Enabling is idempotent while the tap is already live. Only reached
         // while the live capability probe above still succeeds.
+        enter_segment(signals, TapSegment::TapEnable);
         tap.enable();
         // Back to servicing the tap: the short stall budget applies again, so
         // the fresh mark must be visible before `Armed` is — the watchdog would
@@ -604,6 +632,7 @@ fn thread_main(
     // run-loop slice that decides whether to re-arm it.
     let tap_disabled = Arc::new(AtomicBool::new(false));
 
+    enter_segment(&signals, TapSegment::TapCreate);
     let tap_result = {
         let callback_signals = Arc::clone(&signals);
         let callback_activity = Arc::clone(&callback_activity);
@@ -636,6 +665,7 @@ fn thread_main(
     };
     signals.mark_tap_progress();
 
+    enter_segment(&signals, TapSegment::RunloopSource);
     let Ok(loop_source) = tap.mach_port().create_runloop_source(0) else {
         error!("CFRunLoopSourceCreate failed for event tap");
         return;
@@ -644,12 +674,14 @@ fn thread_main(
 
     let run_loop = CFRunLoop::get_current();
 
+    enter_segment(&signals, TapSegment::AddSource);
     // SAFETY: kCFRunLoopCommonModes is a static CF string constant that
     // lives for the duration of the process.
     unsafe {
         run_loop.add_source(&loop_source, kCFRunLoopCommonModes);
     }
     signals.mark_tap_progress();
+    enter_segment(&signals, TapSegment::WatchdogSpawn);
     if let Err(error) =
         spawn_callback_watchdog(Arc::clone(&signals), Arc::clone(&callback_activity))
     {
@@ -657,13 +689,19 @@ fn thread_main(
         return;
     }
     signals.mark_tap_progress();
+    enter_segment(&signals, TapSegment::TapEnable);
     tap.enable();
     signals.mark_tap_progress();
     signals.set_phase(TapPhase::Armed);
 
+    #[cfg(debug_assertions)]
+    spawn_freeze_exit_trigger(Arc::clone(&signals));
+
     if rl_tx.send(run_loop.clone()).is_err() {
-        debug!("hook parent dropped before run loop was ready; stopping");
+        debug!("hook parent dropped before run loop is ready; stopping");
+        enter_segment(&signals, TapSegment::Teardown);
         disable_tap(&tap);
+        enter_segment(&signals, TapSegment::SourceRemove);
         // SAFETY: framework-provided static CFStringRef, 'static.
         run_loop.remove_source(&loop_source, unsafe { kCFRunLoopCommonModes });
         drop(loop_source);
@@ -680,7 +718,9 @@ fn thread_main(
     // Detach the tap from the event stream synchronously before unwinding,
     // so input recovers immediately rather than whenever CF happens to
     // release the port.
+    enter_segment(&signals, TapSegment::Teardown);
     disable_tap(&tap);
+    enter_segment(&signals, TapSegment::SourceRemove);
     // SAFETY: framework-provided static CFStringRef, 'static.
     run_loop.remove_source(&loop_source, unsafe { kCFRunLoopCommonModes });
     drop(loop_source);
@@ -690,6 +730,60 @@ fn thread_main(
 
 fn duration_millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// Debug-only end-to-end trigger: exit exactly as a tap-thread stall does, so
+/// the freeze-exit marker, dev respawn, notification, and GUI banner can be
+/// exercised without a real freeze — which is the bug under investigation.
+/// Armed only by `OPENLOGI_DEV_FREEZE_EXIT_AFTER_MS`; production builds never
+/// compile this in.
+#[cfg(debug_assertions)]
+fn spawn_freeze_exit_trigger(signals: Arc<WatchdogSignals>) {
+    let Ok(raw) = std::env::var("OPENLOGI_DEV_FREEZE_EXIT_AFTER_MS") else {
+        return;
+    };
+    let Ok(delay_ms) = raw.parse::<u64>() else {
+        warn!("OPENLOGI_DEV_FREEZE_EXIT_AFTER_MS is not a millisecond count — ignoring");
+        return;
+    };
+    let _ = thread::Builder::new()
+        .name("openlogi-freeze-trigger".into())
+        .spawn(move || {
+            thread::sleep(Duration::from_millis(delay_ms));
+            let freeze_exit = crate::FreezeExit {
+                reason: crate::FreezeExitReason::TapThreadStalled,
+                segment: signals.segment().as_str(),
+                elapsed_ms: delay_ms,
+                stop_requested: false,
+            };
+            error!(
+                reason = freeze_exit.reason.as_str(),
+                segment = freeze_exit.segment,
+                elapsed_ms = delay_ms,
+                "OPENLOGI_DEV_FREEZE_EXIT_AFTER_MS fired — simulating a tap-thread stall exit"
+            );
+            crate::freeze::notify(freeze_exit);
+            #[expect(
+                clippy::exit,
+                reason = "the same force-exit the lifecycle watchdog uses: the tap must die with the process"
+            )]
+            std::process::exit(FREEZE_HAZARD_EXIT_CODE);
+        });
+}
+
+/// Publish `segment` as the blocking call the tap thread is entering and warn
+/// when the previous one held past [`watchdog::SLOW_SEGMENT_WARN`] — a stall
+/// the budgets recovered from instead of exiting for, which no exit log will
+/// ever show.
+fn enter_segment(signals: &WatchdogSignals, segment: TapSegment) {
+    if let Some((previous, held)) = signals.set_segment(segment, signals.now_millis()) {
+        warn!(
+            ?previous,
+            held_ms = duration_millis(held),
+            "tap-thread segment ran past the near-miss threshold — the \
+             freeze-hazard budget recovered it this time"
+        );
+    }
 }
 
 /// Whether CoreGraphics currently considers `tap` enabled. Checked on the tap

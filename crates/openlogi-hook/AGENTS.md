@@ -62,8 +62,13 @@ crate's own load-bearing behavior.
   WindowServer/TCC round trip, not tap servicing — and a stop that waited out a slow
   probe gets the short budget afresh for the teardown. Refresh progress *before*
   publishing `Armed` again, or the watchdog judges a probe that already returned against
-  the pre-probe mark. Both exit logs carry `stalled_ms` (uptime since the stall began)
-  and `watched_ms`; a wide gap between them is the process-frozen signature.
+  the   pre-probe mark. Both exit logs carry `stalled_ms` (uptime since the stall began)
+  and `watched_ms`; a wide gap between them is the process-frozen signature. Both
+  also carry `segment` — the last blocking call the tap thread entered
+  (`TapSegment`), which narrows an exit to one CoreGraphics/run-loop call inside
+  the phase. The same naming drives `SLOW_SEGMENT_WARN`: a segment that held past
+  half the shutdown budget logs a near-miss warning even when the stall recovered,
+  because an exit log only ever shows the stall that did not.
 - The off-main `frontmost_application` read keeps its explicit `autoreleasepool` — the
   watcher thread has no run loop; that is the only place in this crate a pool belongs.
   Every string it copies out (bundle id *and* localized name) must be owned before the

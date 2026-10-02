@@ -15,6 +15,12 @@ pub(super) const CALLBACK_POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// full.
 pub(super) const CALLBACK_OBSERVATION_GAP: Duration = CALLBACK_POLL_INTERVAL.saturating_mul(5);
 pub(super) const TAP_SHUTDOWN_BUDGET: Duration = Duration::from_millis(1_500);
+/// How long a [`TapSegment`] may hold before [`WatchdogSignals::set_segment`]
+/// reports it as a near-miss: half the freeze-hazard [`TAP_SHUTDOWN_BUDGET`],
+/// so a call that recovered just under the exit budget is still logged. The
+/// exit logs only ever see the stall that did not recover; this catches the
+/// one that did.
+pub(super) const SLOW_SEGMENT_WARN: Duration = Duration::from_millis(750);
 /// How long the tap thread may stay inside one between-slice capability probe
 /// before the watchdog treats it as wedged.
 ///
@@ -82,6 +88,94 @@ impl TapPhase {
     }
 }
 
+/// The blocking call the tap thread last entered, for the exit logs.
+///
+/// [`TapPhase`] says which region of the state machine the thread is in;
+/// a segment names the specific CoreGraphics/run-loop call inside it, so an
+/// exit (or a [`SLOW_SEGMENT_WARN`] near-miss) points at one call instead of
+/// a region. Informational only: no watchdog decision reads it, so an unknown
+/// byte decodes to [`TapSegment::None`] rather than failing hazardously the
+/// way [`TapPhase::decode`] must.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub(super) enum TapSegment {
+    /// No blocking call named yet: before the first fence, or unreadable.
+    None = 0,
+    /// Inside `CGEventTap::new` — the WindowServer tap-creation round trip.
+    TapCreate,
+    /// Inside `CFRunLoopSourceCreate` for the tap's Mach port.
+    RunloopSource,
+    /// Inside `CFRunLoopAddSource`.
+    AddSource,
+    /// Spawning the callback-watchdog thread.
+    WatchdogSpawn,
+    /// Inside `CGEventTapEnable(true)` — arming or re-arming the live tap.
+    TapEnable,
+    /// Inside `CFRunLoopRunInMode` — the bounded service slice itself.
+    RunLoopSlice,
+    /// Inside the between-slice capability probe (`AXIsProcessTrusted` plus
+    /// the throwaway filtering tap).
+    AxProbe,
+    /// Inside `CGEventTapIsEnabled`.
+    TapStateQuery,
+    /// Inside the synchronous teardown (`CGEventTapEnable(false)`).
+    Teardown,
+    /// Inside `CFRunLoopRemoveSource` during teardown.
+    SourceRemove,
+}
+
+impl TapSegment {
+    const fn decode(value: u64) -> Self {
+        match value {
+            1 => Self::TapCreate,
+            2 => Self::RunloopSource,
+            3 => Self::AddSource,
+            4 => Self::WatchdogSpawn,
+            5 => Self::TapEnable,
+            6 => Self::RunLoopSlice,
+            7 => Self::AxProbe,
+            8 => Self::TapStateQuery,
+            9 => Self::Teardown,
+            10 => Self::SourceRemove,
+            _ => Self::None,
+        }
+    }
+
+    /// Stable name for exit logs and freeze-exit reports.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::TapCreate => "tap_create",
+            Self::RunloopSource => "runloop_source",
+            Self::AddSource => "add_source",
+            Self::WatchdogSpawn => "watchdog_spawn",
+            Self::TapEnable => "tap_enable",
+            Self::RunLoopSlice => "run_loop_slice",
+            Self::AxProbe => "ax_probe",
+            Self::TapStateQuery => "tap_state_query",
+            Self::Teardown => "teardown",
+            Self::SourceRemove => "source_remove",
+        }
+    }
+}
+
+/// One segment packed with the monotonic millisecond it was entered at:
+/// segment in the top byte, `entered_at_ms` in the low 56. One Release store
+/// publishes the whole state, so a reader cannot pair a new segment with an
+/// old entry time — the same complete-state rule as [`CallbackActivity`].
+/// 56 bits of milliseconds is ~890 years of uptime, so no real entry time
+/// wraps into the segment byte.
+const SEGMENT_MS_MASK: u64 = (1 << 56) - 1;
+
+fn pack_segment(segment: TapSegment, entered_at_ms: u64) -> u64 {
+    (u64::from(segment as u8) << 56) | (entered_at_ms & SEGMENT_MS_MASK)
+}
+
+fn unpack_segment(word: u64) -> (TapSegment, u64) {
+    (TapSegment::decode(word >> 56), word & SEGMENT_MS_MASK)
+}
+
 /// Whether the tap callback is idle or the monotonic millisecond when it entered.
 ///
 /// Zero is idle; [`WatchdogSignals::now_millis`] reserves nonzero values for
@@ -124,6 +218,8 @@ pub(super) struct WatchdogSignals {
     phase: AtomicU8,
     stop_requested: AtomicBool,
     tap_progress_at_ms: AtomicU64,
+    /// Packed [`TapSegment`] state; see [`pack_segment`].
+    segment: AtomicU64,
 }
 
 impl Default for WatchdogSignals {
@@ -133,6 +229,7 @@ impl Default for WatchdogSignals {
             phase: AtomicU8::new(TapPhase::Starting as u8),
             stop_requested: AtomicBool::new(false),
             tap_progress_at_ms: AtomicU64::new(0),
+            segment: AtomicU64::new(0),
         }
     }
 }
@@ -175,6 +272,29 @@ impl WatchdogSignals {
                 .load(Ordering::Acquire)
                 .saturating_sub(1),
         )
+    }
+
+    /// Publish `segment` as the call the tap thread is entering, returning the
+    /// previous segment and how long it was current when that held at least
+    /// [`SLOW_SEGMENT_WARN`] — a stall that recovered instead of exiting.
+    ///
+    /// `now_ms` is explicit (from [`Self::now_millis`]) so tests drive the
+    /// threshold deterministically instead of sleeping against the wall clock.
+    pub fn set_segment(&self, segment: TapSegment, now_ms: u64) -> Option<(TapSegment, Duration)> {
+        let previous = self
+            .segment
+            .swap(pack_segment(segment, now_ms), Ordering::AcqRel);
+        let (previous_segment, entered_at_ms) = unpack_segment(previous);
+        if entered_at_ms == 0 || entered_at_ms > now_ms {
+            return None;
+        }
+        let held = Duration::from_millis(now_ms - entered_at_ms);
+        (held >= SLOW_SEGMENT_WARN).then_some((previous_segment, held))
+    }
+
+    /// The segment the tap thread last entered, for the exit logs.
+    pub fn segment(&self) -> TapSegment {
+        unpack_segment(self.segment.load(Ordering::Acquire)).0
     }
 
     pub fn thread_exit_guard(self: &Arc<Self>) -> TapThreadExitGuard {
@@ -465,6 +585,68 @@ mod tests {
 
         activity.exit();
         assert_eq!(activity.entered_at_ms(), None);
+    }
+
+    #[test]
+    fn segment_decoder_is_total_and_informational() {
+        assert_eq!(TapSegment::decode(0), TapSegment::None);
+        assert_eq!(TapSegment::decode(1), TapSegment::TapCreate);
+        assert_eq!(TapSegment::decode(10), TapSegment::SourceRemove);
+        // Informational only: an unknown byte is None, never a hazard verdict.
+        assert_eq!(TapSegment::decode(11), TapSegment::None);
+        assert_eq!(TapSegment::decode(u64::MAX), TapSegment::None);
+
+        let signals = WatchdogSignals::default();
+        assert_eq!(signals.segment(), TapSegment::None);
+
+        // Names ride the freeze-exit reports, so they are part of the contract.
+        assert_eq!(TapSegment::None.as_str(), "none");
+        assert_eq!(TapSegment::RunLoopSlice.as_str(), "run_loop_slice");
+        assert_eq!(TapSegment::SourceRemove.as_str(), "source_remove");
+    }
+
+    #[test]
+    fn segment_round_trips_through_the_packed_word() {
+        for segment in [
+            TapSegment::None,
+            TapSegment::TapCreate,
+            TapSegment::RunloopSource,
+            TapSegment::AddSource,
+            TapSegment::WatchdogSpawn,
+            TapSegment::TapEnable,
+            TapSegment::RunLoopSlice,
+            TapSegment::AxProbe,
+            TapSegment::TapStateQuery,
+            TapSegment::Teardown,
+            TapSegment::SourceRemove,
+        ] {
+            let (decoded, entered_at) = unpack_segment(pack_segment(segment, 9_000_000_000));
+            assert_eq!(decoded, segment);
+            assert_eq!(entered_at, 9_000_000_000);
+        }
+    }
+
+    #[test]
+    fn set_segment_reports_only_a_previous_segment_that_held_too_long() {
+        let signals = WatchdogSignals::default();
+        // Nothing entered yet: the first segment has no predecessor to charge.
+        assert_eq!(signals.set_segment(TapSegment::TapCreate, 100), None);
+        // A quick transition is ordinary progress, not a near-miss.
+        assert_eq!(
+            signals.set_segment(TapSegment::RunLoopSlice, 100 + 749),
+            None
+        );
+        assert_eq!(signals.segment(), TapSegment::RunLoopSlice);
+        // The boundary counts: exactly the warn threshold is reported.
+        let warn_at = 100 + 749 + u64::try_from(SLOW_SEGMENT_WARN.as_millis()).unwrap();
+        assert_eq!(
+            signals.set_segment(TapSegment::AxProbe, warn_at),
+            Some((TapSegment::RunLoopSlice, SLOW_SEGMENT_WARN))
+        );
+        // A clock that went backwards yields no bogus duration.
+        let signals = WatchdogSignals::default();
+        assert_eq!(signals.set_segment(TapSegment::TapCreate, 500), None);
+        assert_eq!(signals.set_segment(TapSegment::AxProbe, 400), None);
     }
 
     fn observation(
