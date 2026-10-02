@@ -2,7 +2,7 @@
 //! pre-connection / unreachable / outdated-build frames rendered in place of
 //! the real UI, and an attention bar shown only when action is required.
 
-use gpui::{App, Div, IntoElement, ParentElement, SharedString, Styled, div, px, rgb};
+use gpui::{App, Context, Div, IntoElement, ParentElement, SharedString, Styled, div, px, rgb};
 use gpui_component::{
     Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
@@ -10,6 +10,7 @@ use gpui_component::{
     spinner::Spinner,
     v_flex,
 };
+use openlogi_ipc::FreezeExitReport;
 
 use crate::app::menu::OpenConfigFolder;
 use crate::ui::theme::{self, ContentWidth, FOOTER_H, Palette, Typography as _};
@@ -135,6 +136,61 @@ pub(super) fn attention_footer(cx: &App) -> impl IntoElement {
         .border_t_1()
         .border_color(pal.border)
         .child(accessibility_status(pal))
+}
+
+/// Freeze-exit notice row: shown once per [`FreezeExitReport`] until the user
+/// dismisses it (which records exactly this report on the root view). Like
+/// [`attention_footer`] it appears only when there is something to say —
+/// normal operation has no footer.
+pub(super) fn freeze_exit_footer(
+    report: FreezeExitReport,
+    cx: &mut Context<super::AppView>,
+) -> Div {
+    // Same scoping reasoning as `accessibility_status`: these traits' only
+    // user here is this affordance, so an ungated import would sit unused on
+    // the platforms where the banner never renders.
+    use gpui::InteractiveElement as _;
+    use gpui_base::Button as BaseButton;
+
+    let pal = theme::palette(cx);
+    h_flex()
+        .h(px(FOOTER_H))
+        .flex_shrink_0()
+        .w_full()
+        .px_5()
+        .gap_3()
+        .items_center()
+        .border_t_1()
+        .border_color(pal.border)
+        .child(
+            div()
+                .size_1p5()
+                .rounded_full()
+                .bg(rgb(theme::STATUS_CONNECTING)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .text_caption()
+                .text_color(pal.text_primary)
+                .child(tr!("freeze_exit.banner.message")),
+        )
+        .child(
+            BaseButton::new("dismiss-freeze-exit")
+                .accessibility_label(tr!("freeze_exit.banner.dismiss"))
+                .text_caption()
+                .text_color(pal.text_muted)
+                .cursor_pointer()
+                .hover(|style| style.text_color(pal.text_primary))
+                .focus_visible(|style| style.text_color(pal.text_primary))
+                .child(tr!("freeze_exit.banner.dismiss"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    // The listener is `Fn`, not `FnOnce`: clone the report
+                    // rather than moving it out on a repeated click.
+                    this.freeze_exit_dismissed = Some(report.clone());
+                    cx.notify();
+                })),
+        )
 }
 
 /// Accessibility affordance that requests the grant on click (the native

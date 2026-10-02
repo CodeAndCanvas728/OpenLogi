@@ -10,7 +10,7 @@ use gpui_component::{
     v_flex,
 };
 use openlogi_core::device::{Capabilities, DeviceKind};
-use openlogi_ipc::InventoryHealth;
+use openlogi_ipc::{FreezeExitReport, InventoryHealth};
 use tracing::info;
 
 use self::menu::{APP_KEY_CONTEXT, CloseWindow, Minimize, NavigateBack, Zoom};
@@ -191,6 +191,11 @@ pub struct AppView {
     /// A successful save must redraw that screen even though the error is gone.
     config_issue_visible: bool,
     accessibility_dismissed: bool,
+    /// The freeze-exit report this window has already shown and the user
+    /// dismissed. Compared against the agent's live report, so a *new* freeze
+    /// exit (a different report) shows again while a re-render of the same one
+    /// does not.
+    freeze_exit_dismissed: Option<FreezeExitReport>,
     /// Which section of the device-detail screen is showing.
     active_tab: DetailTab,
 }
@@ -323,6 +328,7 @@ impl AppView {
             removal_obs,
             config_issue_visible: false,
             accessibility_dismissed: false,
+            freeze_exit_dismissed: None,
             active_tab: DetailTab::Buttons,
         }
     }
@@ -568,6 +574,17 @@ impl AppView {
             return root.child(Self::accessibility_gate(cx)).into_any_element();
         }
 
+        // The previous agent run's freeze exit, once this window has not yet
+        // dismissed it — one report per agent run, so a new freeze is new news.
+        let freeze_notice = status
+            .last_freeze_exit
+            .clone()
+            .filter(|report| self.freeze_exit_dismissed.as_ref() != Some(report));
+        // Built before the render chain below: its listener takes `cx`
+        // mutably, and a closure passed into the chain would hold it for the
+        // whole statement.
+        let freeze_footer = freeze_notice.map(|report| status::freeze_exit_footer(report, cx));
+
         let has_device = AppState::try_global(cx)
             .map(|state| state.read(cx))
             .is_some_and(|s| !s.devices().is_empty());
@@ -662,6 +679,7 @@ impl AppView {
         root.child(header_el)
             .child(content_el)
             .when(!granted, |this| this.child(status::attention_footer(cx)))
+            .children(freeze_footer)
             .into_any_element()
     }
 }
