@@ -7,16 +7,18 @@ use std::time::Instant;
 use super::{
     ActivePress, ButtonCommand, ButtonInput, ButtonRuntimeEvent, ButtonState, CancelReason,
     EVENT_QUEUE_CAPACITY, EndReason, PressBehavior, PressToken, SHUTDOWN_POLL_PERIOD,
-    ShutdownRequest,
+    SharedHidppHscroll, ShutdownRequest,
 };
 
 pub(super) fn run_worker(
     events: &mpsc::Receiver<ButtonCommand>,
     shutdown: &mpsc::Receiver<ShutdownRequest>,
     shared_generation: &AtomicU64,
+    hscroll_sink: SharedHidppHscroll,
     emit: &mut impl FnMut(ButtonRuntimeEvent),
 ) {
     let mut state = ButtonState::default();
+    state.set_hscroll_sink(hscroll_sink);
     let mut generation = shared_generation.load(Ordering::Acquire);
     loop {
         if finish_shutdown_if_requested(shutdown, &mut state, emit) {
@@ -282,7 +284,7 @@ pub(super) fn process_input(
                         action,
                     });
                 }
-                emit_released(press, emit);
+                emit_released(press, released_at, emit);
             }
         }
         ButtonInput::Pulse(press) => {
@@ -294,7 +296,7 @@ pub(super) fn process_input(
             }
             emit(ButtonRuntimeEvent::Started(press.clone()));
             if let Some(press) = state.release(&press.token.key) {
-                emit_released(press, emit);
+                emit_released(press, Instant::now(), emit);
             }
         }
         ButtonInput::TriggerWhilePressed { token, action } => {
@@ -316,8 +318,12 @@ pub(super) fn emit_selected_long_presses(
     }
 }
 
-fn emit_released(press: ActivePress, emit: &mut impl FnMut(ButtonRuntimeEvent)) {
-    if let Some(action) = press.release_action().cloned() {
+fn emit_released(
+    press: ActivePress,
+    released_at: Instant,
+    emit: &mut impl FnMut(ButtonRuntimeEvent),
+) {
+    if let Some(action) = press.release_action(released_at).cloned() {
         emit(ButtonRuntimeEvent::Triggered {
             press: press.clone(),
             action,
