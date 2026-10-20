@@ -1,6 +1,11 @@
 //! DockSwipe injection with read-only, per-display Space confirmation.
 //!
-//! Private event format follows yabai's SIP-enabled implementation:
+//! A switch streams a realistic three-finger-swipe gesture (began, eased
+//! changed edges at the real ~12 ms cadence, then an end edge with an exit
+//! velocity) so the Dock plays its native slide animation — the shape Mac
+//! Mouse Fix's event investigation reconstructions measure on real trackpad
+//! swipes. The private event format follows yabai's SIP-enabled
+//! implementation:
 //! <https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/space_manager.c#L927-L981>
 //! No Dock injection, cursor warp, focus click, or symbolic-hotkey mutation.
 
@@ -19,14 +24,17 @@ use objc2_core_foundation::{
     CFArray, CFDictionary, CFNumber, CFRetained, CFString, CFType, CFUUID,
 };
 use objc2_core_graphics::{
-    CGError, CGEvent, CGEventField, CGEventTapLocation, CGEventType, CGGetDisplaysWithPoint,
+    CGDisplayBounds, CGError, CGEvent, CGEventField, CGEventTapLocation, CGEventType,
+    CGGetDisplaysWithPoint,
 };
 use objc2_foundation::{
     NSNotification, NSNotificationCenter, NSObjectProtocol, NSProcessInfo, NSUserDefaults,
     ns_string,
 };
 
-use super::super::space_switch::{self, Backend, Direction, Failure, Lease, PostGate, SpaceState};
+use super::super::space_switch::{
+    self, Backend, Direction, Failure, Lease, PostGate, SpaceState, SwipePhase, SwipeStep,
+};
 use super::{app_services, app_services_symbol};
 
 static BUSY: AtomicBool = AtomicBool::new(false);
@@ -165,15 +173,28 @@ impl Backend for Native {
     }
 
     fn post(&mut self, direction: Direction, gate: PostGate) -> Result<(), Failure> {
-        let events = swipe_events(direction).ok_or(Failure::PostFailed)?;
         if cursor_display() != Some(self.display) {
             return Err(Failure::ContextChanged);
         }
-        gate.commit(|| {
-            for event in &events {
-                CGEvent::post(CGEventTapLocation::SessionEventTap, Some(event));
-            }
-        })
+        let encoder = SwipeEncoder::resolve().ok_or(Failure::PostFailed)?;
+        let timeline =
+            space_switch::swipe_timeline(encoder.swipe_sign(direction), swipe_distance(self.display));
+        // Encode every edge before committing: allocation is native
+        // preparation the cancellation can still veto, and a mid-stream
+        // allocation failure cannot leave an unterminated gesture.
+        let events: Option<Vec<_>> = timeline.iter().map(|step| encoder.event(step)).collect();
+        let Some(events) = events else {
+            return Err(Failure::PostFailed);
+        };
+        gate.commit(|| post_event(&events[0]))?;
+        // The began edge is committed; stream the rest at the real reporting
+        // cadence. This runs on the dedicated spaces worker thread — the
+        // dispatching hook thread was released by `commit`.
+        for event in &events[1..] {
+            std::thread::sleep(space_switch::SWIPE_STEP_INTERVAL);
+            post_event(event);
+        }
+        Ok(())
     }
 
     fn elapsed(&self) -> Duration {
@@ -186,42 +207,28 @@ impl Backend for Native {
     }
 }
 
-fn swipe_events(direction: Direction) -> Option<[CFRetained<CGEvent>; 2]> {
-    if NSProcessInfo::processInfo()
-        .operatingSystemVersion()
-        .majorVersion
-        >= 27
-    {
-        hid_swipe_events(direction, natural_scrolling())
-    } else {
-        field_swipe_events(direction)
+pub(super) fn field_swipe_event(step: &SwipeStep) -> Option<CFRetained<CGEvent>> {
+    let event = CGEvent::new(None)?;
+    // Establish the private DockControl type before setting its fields,
+    // as required by CGEventSetIntegerValueField's API contract. This is
+    // type 30 (also private field 55), not the generic Gesture type 29.
+    CGEvent::set_type(Some(&event), CGEventType(30));
+    // DockSwipe HID kind, horizontal motion, and the step's gesture phase.
+    // Progress (field 124) is the cumulative drag distance the Dock slides
+    // the Space by; the end edge's exit velocity (field 129) commits it.
+    for (field, value) in [(110, 23), (123, 1), (132, step.phase.code())] {
+        CGEvent::set_integer_value_field(Some(&event), CGEventField(field), i64::from(value));
     }
+    CGEvent::set_integer_value_field(
+        Some(&event),
+        CGEventField::EventSourceUserData,
+        super::super::SYNTHETIC_EVENT_USER_DATA,
+    );
+    CGEvent::set_double_value_field(Some(&event), CGEventField(124), step.progress);
+    CGEvent::set_double_value_field(Some(&event), CGEventField(129), step.velocity);
+    Some(event)
 }
 
-fn field_swipe_events(direction: Direction) -> Option<[CFRetained<CGEvent>; 2]> {
-    let make = |phase| {
-        let event = CGEvent::new(None)?;
-        // Establish the private DockControl type before setting its fields,
-        // as required by CGEventSetIntegerValueField's API contract. This is
-        // type 30 (also private field 55), not the generic Gesture type 29.
-        CGEvent::set_type(Some(&event), CGEventType(30));
-        // DockSwipe HID kind, horizontal motion, and balanced gesture phases.
-        for (field, value) in [(110, 23), (123, 1), (132, phase)] {
-            CGEvent::set_integer_value_field(Some(&event), CGEventField(field), value);
-        }
-        CGEvent::set_integer_value_field(
-            Some(&event),
-            CGEventField::EventSourceUserData,
-            super::super::SYNTHETIC_EVENT_USER_DATA,
-        );
-        CGEvent::set_double_value_field(Some(&event), CGEventField(124), direction.sign());
-        CGEvent::set_double_value_field(Some(&event), CGEventField(129), direction.sign() * 9999.0);
-        Some(event)
-    };
-    // Prepare both phases before posting either: allocation failure cannot
-    // leave an unterminated gesture. Send exactly one adjacent-Space swipe.
-    Some([make(1)?, make(4)?])
-}
 
 const HID_TYPE_VELOCITY: u32 = 9;
 const HID_TYPE_DOCK_SWIPE: u32 = 23;
@@ -259,62 +266,129 @@ pub(in crate::inject) fn natural_scrolling() -> bool {
 
 /// macOS 27 reads an `IOHIDEvent` attached to the event instead of its private
 /// fields, and signs progress and velocity the other way round.
-fn hid_swipe_events(direction: Direction, natural: bool) -> Option<[CFRetained<CGEvent>; 2]> {
-    let class = AnyClass::get(c"HIDEvent")?;
-    let set_hid = app_services::sky_light_symbol(c"SLEventSetIOHIDEvent")?;
-    // SAFETY: the resolved SPI has the `void(CGEventRef, IOHIDEventRef)` ABI.
-    let set_hid = unsafe { std::mem::transmute::<*mut c_void, SetHidEvent>(set_hid) };
-    // macOS 27 reads the swipe's sign the opposite way from the legacy
-    // field-based encoding, and only when natural scrolling is on (the
-    // default): with it off, Next/Previous are inverted (#1703, reported
-    // against two displays and 13/13 swipes on macOS 27.0.1).
-    let sign = if natural {
-        -direction.sign()
-    } else {
-        direction.sign()
-    };
-    let make = |phase: u32| {
-        let hid = dock_swipe_hid_event(class, phase, sign)?;
-        let event = CGEvent::new(None)?;
-        CGEvent::set_type(Some(&event), CGEventType(30));
-        // SAFETY: both objects are live; SkyLight retains the HID event.
-        unsafe { set_hid(&raw const *event, Retained::as_ptr(&hid).cast()) };
-        CGEvent::set_integer_value_field(
-            Some(&event),
-            CGEventField::EventSourceUserData,
-            super::super::SYNTHETIC_EVENT_USER_DATA,
-        );
-        Some(event)
-    };
-    Some([make(1)?, make(4)?])
+/// macOS 27 reads an `IOHIDEvent` attached to the event instead of its private
+/// fields, and signs progress and velocity the other way round.
+fn hid_swipe_event(
+    class: &AnyClass,
+    set_hid: SetHidEvent,
+    step: &SwipeStep,
+) -> Option<CFRetained<CGEvent>> {
+    let hid = dock_swipe_hid_event(class, step)?;
+    let event = CGEvent::new(None)?;
+    CGEvent::set_type(Some(&event), CGEventType(30));
+    // SAFETY: both objects are live; SkyLight retains the HID event.
+    unsafe { set_hid(&raw const *event, Retained::as_ptr(&hid).cast()) };
+    CGEvent::set_integer_value_field(
+        Some(&event),
+        CGEventField::EventSourceUserData,
+        super::super::SYNTHETIC_EVENT_USER_DATA,
+    );
+    Some(event)
 }
 
-/// macOS 27 requires a velocity child on the end phase of a DockSwipe.
-/// Private fields follow Mac Mouse Fix's event investigation:
-/// <https://github.com/noah-nuebling/mac-mouse-fix/commit/f92d2d53a>.
-fn dock_swipe_hid_event(class: &AnyClass, phase: u32, sign: f64) -> Option<Retained<AnyObject>> {
+/// One streamed DockSwipe edge as a macOS 27 `IOHIDEvent`. Progress is the
+/// cumulative drag distance the Dock slides the Space by, and only the end
+/// phase carries the velocity child that commits the gesture.
+fn dock_swipe_hid_event(class: &AnyClass, step: &SwipeStep) -> Option<Retained<AnyObject>> {
     let hid = hid_event(class, HID_TYPE_DOCK_SWIPE)?;
     // SAFETY: private `HIDEvent` setters taking (u32), (NSInteger, u32),
     // (double, u32) and (HIDEvent) respectively.
     unsafe {
-        let _: () = msg_send![&*hid, setOptions: phase << HID_OPTION_PHASE_SHIFT];
+        let _: () =
+            msg_send![&*hid, setOptions: step.phase.code() << HID_OPTION_PHASE_SHIFT];
         let _: () =
             msg_send![&*hid, setIntegerValue: HID_MOTION_HORIZONTAL, forField: HID_FIELD_MOTION];
         let _: () =
             msg_send![&*hid, setIntegerValue: HID_FLAVOR_DOCK_PRIMARY, forField: HID_FIELD_FLAVOR];
-        let _: () = msg_send![&*hid, setDoubleValue: sign, forField: HID_FIELD_PROGRESS];
-        if phase == 4 {
+        let _: () = msg_send![&*hid, setDoubleValue: step.progress, forField: HID_FIELD_PROGRESS];
+        if step.phase == SwipePhase::Ended {
             let velocity = hid_event(class, HID_TYPE_VELOCITY)?;
-            let speed = sign * 9999.0;
             let _: () =
-                msg_send![&*velocity, setDoubleValue: speed, forField: HID_FIELD_VELOCITY_X];
+                msg_send![&*velocity, setDoubleValue: step.velocity, forField: HID_FIELD_VELOCITY_X];
             let _: () =
-                msg_send![&*velocity, setDoubleValue: speed, forField: HID_FIELD_VELOCITY_Y];
+                msg_send![&*velocity, setDoubleValue: step.velocity, forField: HID_FIELD_VELOCITY_Y];
             let _: () = msg_send![&*hid, appendEvent: &*velocity];
         }
     }
     Some(hid)
 }
+
+/// Per-step encoder for one space-switch gesture. The legacy private-field
+/// encoding and the macOS 27 IOHIDEvent encoding disagree about swipe sign
+/// (and macOS 27 only under natural scrolling), so each resolves its sign up
+/// front and only the encoding-specific event materialization differs.
+enum SwipeEncoder {
+    Fields,
+    Hid {
+        class: &'static AnyClass,
+        set_hid: SetHidEvent,
+    },
+}
+
+impl SwipeEncoder {
+    fn resolve() -> Option<Self> {
+        if NSProcessInfo::processInfo().operatingSystemVersion().majorVersion >= 27 {
+            Some(Self::Hid {
+                class: AnyClass::get(c"HIDEvent")?,
+                set_hid: {
+                    let set_hid = app_services::sky_light_symbol(c"SLEventSetIOHIDEvent")?;
+                    // SAFETY: the resolved SPI has the `void(CGEventRef, IOHIDEventRef)` ABI.
+                    unsafe { std::mem::transmute::<*mut c_void, SetHidEvent>(set_hid) }
+                },
+            })
+        } else {
+            Some(Self::Fields)
+        }
+    }
+
+    /// The signed swipe direction this encoding expects for `direction`.
+    fn swipe_sign(&self, direction: Direction) -> f64 {
+        match self {
+            // macOS 27 reads the swipe's sign the opposite way from the legacy
+            // field-based encoding, and only when natural scrolling is on (the
+            // default): with it off, Next/Previous are inverted (#1703,
+            // reported against two displays and 13/13 swipes on macOS 27.0.1).
+            Self::Hid { .. } => {
+                if natural_scrolling() {
+                    -direction.sign()
+                } else {
+                    direction.sign()
+                }
+            }
+            Self::Fields => direction.sign(),
+        }
+    }
+    fn event(&self, step: &SwipeStep) -> Option<CFRetained<CGEvent>> {
+        match self {
+            Self::Fields => field_swipe_event(step),
+            Self::Hid { class, set_hid } => hid_swipe_event(class, *set_hid, step),
+        }
+    }
+}
+
+/// One cursor display's streamed drag distance: [`space_switch::SWIPE_DRAG_FRACTION`] of
+/// its width in points, so the Space visibly slides past the commit point
+/// before the end edge flicks it home.
+fn swipe_distance(display_id: u32) -> f64 {
+    let width = CGDisplayBounds(display_id).size.width;
+    if width.is_finite() && width > 0.0 {
+        width * space_switch::SWIPE_DRAG_FRACTION
+    } else {
+        tracing::warn!(
+            display_id,
+            width = %width,
+            "display width unavailable — teleport distance"
+        );
+        // Falls back to the teleport encoding's near-zero distance: the end
+        // edge still commits, just without a visible slide.
+        1.0
+    }
+}
+
+fn post_event(event: &CGEvent) {
+    CGEvent::post(CGEventTapLocation::SessionEventTap, Some(event));
+}
+
 
 type Dictionary = CFDictionary<CFString, CFType>;
 type MainConnection = unsafe extern "C" fn() -> c_int;

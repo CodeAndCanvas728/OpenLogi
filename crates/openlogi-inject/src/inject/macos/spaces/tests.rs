@@ -1,33 +1,54 @@
 use objc2_foundation::NSArray;
 
 use super::*;
-use crate::inject::space_switch::Outcome;
+use crate::inject::space_switch::{self, Outcome};
+
+/// One adjacent-Space switch's streamed drag distance, mirroring the
+/// backend's own computation for a 1500 pt display.
+const TEST_DISTANCE: f64 = 750.0;
+
+fn test_timeline(sign: f64) -> Vec<SwipeStep> {
+    space_switch::swipe_timeline(sign, TEST_DISTANCE)
+}
+
+/// Progress round-trips through a float32 field (the Dock reads origin
+/// offsets at single precision — MMF's float32-encoded field 135 note), and
+/// its conversion loses a few float32 ULPs on the way, so comparisons allow
+/// a single-precision-sized error instead of exact bits.
+#[expect(clippy::cast_possible_truncation, reason = "see the doc comment")]
+fn assert_progress(actual: f64, expected: f64, context: &str) {
+    let tolerance = 8.0_f32 * f32::EPSILON * (expected as f32).abs();
+    assert!(
+        (actual as f32 - expected as f32).abs() <= tolerance,
+        "{context}: {actual} != {expected}"
+    );
+}
 
 #[test]
-fn dock_swipe_encodes_both_directions_and_balanced_phases() {
-    for (direction, progress, velocity) in [
-        (Direction::Previous, -1.0_f64, -9999.0_f64),
-        (Direction::Next, 1.0_f64, 9999.0_f64),
-    ] {
-        let events = field_swipe_events(direction).expect("CGEvent allocation");
-        for (event, phase) in events.iter().zip([1, 4]) {
-            assert_eq!(CGEvent::r#type(Some(event)), CGEventType(30));
-            for (field, expected) in [(55, 30), (110, 23), (123, 1), (132, phase)] {
+fn field_swipe_encodes_eased_phases_for_both_directions() {
+    for sign in [-1.0_f64, 1.0] {
+        for (index, step) in test_timeline(sign).iter().enumerate() {
+            let event = field_swipe_event(step).expect("CGEvent allocation");
+            assert_eq!(CGEvent::r#type(Some(&event)), CGEventType(30));
+            for (field, expected) in [(55, 30), (110, 23), (123, 1), (132, step.phase.code())] {
                 assert_eq!(
-                    CGEvent::integer_value_field(Some(event), CGEventField(field)),
-                    expected
+                    CGEvent::integer_value_field(Some(&event), CGEventField(field)),
+                    i64::from(expected),
+                    "step {index}: field {field}"
                 );
             }
-            assert_eq!(
-                CGEvent::double_value_field(Some(event), CGEventField(124)).to_bits(),
-                progress.to_bits()
+            assert_progress(
+                CGEvent::double_value_field(Some(&event), CGEventField(124)),
+                step.progress,
+                "step {index}: cumulative progress",
             );
             assert_eq!(
-                CGEvent::double_value_field(Some(event), CGEventField(129)).to_bits(),
-                velocity.to_bits()
+                CGEvent::double_value_field(Some(&event), CGEventField(129)).to_bits(),
+                step.velocity.to_bits(),
+                "step {index}: exit velocity"
             );
             assert_eq!(
-                CGEvent::integer_value_field(Some(event), CGEventField::EventSourceUserData),
+                CGEvent::integer_value_field(Some(&event), CGEventField::EventSourceUserData),
                 crate::inject::SYNTHETIC_EVENT_USER_DATA
             );
         }
@@ -35,7 +56,7 @@ fn dock_swipe_encodes_both_directions_and_balanced_phases() {
 }
 
 #[test]
-fn hid_dock_swipe_attaches_balanced_phases_for_both_scroll_directions() {
+fn hid_dock_swipe_attaches_streamed_phases_for_both_scroll_directions() {
     type CopyHidEvent = unsafe extern "C" fn(*const CGEvent) -> *mut AnyObject;
 
     autoreleasepool(|_| {
@@ -62,26 +83,37 @@ fn hid_dock_swipe_attaches_balanced_phases_for_both_scroll_directions() {
         let copy_hid = unsafe {
             std::mem::transmute::<*mut c_void, CopyHidEvent>(copy_hid.expect("copy API available"))
         };
-        for (natural, direction, expected_progress, expected_velocity) in [
-            (true, Direction::Previous, 1.0_f64, 9999.0_f64),
-            (true, Direction::Next, -1.0, -9999.0),
-            (false, Direction::Previous, -1.0, -9999.0),
-            (false, Direction::Next, 1.0, 9999.0),
+        // SAFETY: the resolved SkyLight symbol has the `void(CGEventRef, IOHIDEventRef)` ABI.
+        let set_hid = unsafe {
+            std::mem::transmute::<*mut c_void, SetHidEvent>(
+                app_services::sky_light_symbol(c"SLEventSetIOHIDEvent").expect("setter API available"),
+            )
+        };
+        let class = AnyClass::get(c"HIDEvent").expect("HIDEvent class");
+        // macOS 27 reads the swipe's sign the opposite way from the legacy
+        // field encoding, and only under natural scrolling (#1703).
+        for (natural, direction, sign) in [
+            (true, Direction::Previous, 1.0_f64),
+            (true, Direction::Next, -1.0_f64),
+            (false, Direction::Previous, -1.0_f64),
+            (false, Direction::Next, 1.0_f64),
         ] {
-            let events = hid_swipe_events(direction, natural).expect("HIDEvent-backed CGEvents");
-            for (event, phase) in events.iter().zip([1_u32, 4_u32]) {
-                assert_eq!(CGEvent::r#type(Some(event)), CGEventType(30));
+            let steps = test_timeline(sign);
+            for (index, step) in steps.iter().enumerate() {
+                let event = hid_swipe_event(class, set_hid, step)
+                    .expect("HIDEvent-backed CGEvent");
+                assert_eq!(CGEvent::r#type(Some(&event)), CGEventType(30));
                 assert_eq!(
-                    CGEvent::integer_value_field(Some(event), CGEventField::EventSourceUserData),
+                    CGEvent::integer_value_field(Some(&event), CGEventField::EventSourceUserData),
                     crate::inject::SYNTHETIC_EVENT_USER_DATA
                 );
                 // SAFETY: event is live; the Copy API returns a retained HIDEvent or null.
-                let hid = unsafe { copy_hid(&raw const **event) };
+                let hid = unsafe { copy_hid(&raw const *event) };
                 // SAFETY: adopt the Copy-rule reference once; Retained releases the HIDEvent.
                 let hid = unsafe { Retained::from_raw(hid) }.expect("attached HIDEvent");
                 // SAFETY: HIDEvent.options returns uint32_t.
                 let options: u32 = unsafe { msg_send![&*hid, options] };
-                assert_eq!(options, phase << 24, "encoded begin/end phase");
+                assert_eq!(options, step.phase.code() << 24, "step {index}: encoded phase");
                 // SAFETY: HIDEvent's integer getter returns NSInteger for this field.
                 let motion: isize =
                     unsafe { msg_send![&*hid, integerValueForField: HID_FIELD_MOTION] };
@@ -93,18 +125,18 @@ fn hid_dock_swipe_attaches_balanced_phases_for_both_scroll_directions() {
                     unsafe { msg_send![&*hid, doubleValueForField: HID_FIELD_PROGRESS] };
                 assert_eq!(motion, HID_MOTION_HORIZONTAL);
                 assert_eq!(flavor, HID_FLAVOR_DOCK_PRIMARY);
-                assert_eq!(
-                    progress.to_bits(),
-                    expected_progress.to_bits(),
-                    "natural={natural}, direction={direction:?}"
+                assert_progress(
+                    progress,
+                    step.progress,
+                    &format!("step {index}: natural={natural}, direction={direction:?}"),
                 );
                 // SAFETY: HIDEvent.children returns a nullable NSArray of HIDEvent objects.
                 let children: Option<Retained<NSArray<AnyObject>>> =
                     unsafe { msg_send![&*hid, children] };
                 assert_eq!(
                     children.as_ref().map_or(0, |children| children.len()),
-                    usize::from(phase == 4),
-                    "only the end phase carries one velocity child"
+                    usize::from(step.phase == SwipePhase::Ended),
+                    "step {index}: only the end phase carries one velocity child"
                 );
                 if let Some(velocity) = children.and_then(|children| children.firstObject()) {
                     // SAFETY: the child is a live HIDEvent; its X getter returns double.
@@ -113,12 +145,12 @@ fn hid_dock_swipe_attaches_balanced_phases_for_both_scroll_directions() {
                     // SAFETY: the child is a live HIDEvent; its Y getter returns double.
                     let vy: f64 =
                         unsafe { msg_send![&*velocity, doubleValueForField: HID_FIELD_VELOCITY_Y] };
-                    assert_eq!(vx.to_bits(), expected_velocity.to_bits());
-                    assert_eq!(vy.to_bits(), expected_velocity.to_bits());
+                    assert_eq!(vx.to_bits(), step.velocity.to_bits());
+                    assert_eq!(vy.to_bits(), step.velocity.to_bits());
                 }
             }
         }
-        eprintln!("HID swipe assertions executed: both directions, both preferences, both phases");
+        eprintln!("HID swipe assertions executed: both directions, both preferences, all phases");
     });
 }
 

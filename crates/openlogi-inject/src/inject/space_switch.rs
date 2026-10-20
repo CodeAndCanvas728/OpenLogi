@@ -87,11 +87,108 @@ pub(super) enum Outcome {
     Reached(u64),
 }
 
+/// Fraction of the cursor display's width one streamed gesture drags the
+/// Space across before its end edge commits the switch.
+pub(super) const SWIPE_DRAG_FRACTION: f64 = 0.5;
+
+/// Changed edges streamed between one gesture's began and end edges.
+pub(super) const SWIPE_CHANGES: usize = 12;
+
+/// Gap between consecutive streamed edges, approximating the ~8 ms reporting
+/// cadence Mac Mouse Fix measured on real trackpad DockSwipes (commit
+/// f92d2d53a). 12 ms over 14 edges keeps a switch under ~170 ms while
+/// staying close enough to the real cadence to read as one gesture.
+pub(super) const SWIPE_STEP_INTERVAL: Duration = Duration::from_millis(12);
+
+/// Exit velocity the end edge carries so the Dock commits the in-flight
+/// gesture. Proven by the teleport encoding this file replaces and in the
+/// same range as Mac Mouse Fix's real-event exit speeds.
+pub(super) const SWIPE_EXIT_SPEED: f64 = 9999.0;
+
+/// Gesture phase of one streamed DockSwipe edge. The codes are the values
+/// both DockSwipe encodings read for began/changed/ended (see the macOS
+/// spaces backend).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SwipePhase {
+    Began,
+    Changed,
+    Ended,
+}
+
+impl SwipePhase {
+    pub(super) const fn code(self) -> u32 {
+        match self {
+            Self::Began => 1,
+            Self::Changed => 2,
+            Self::Ended => 4,
+        }
+    }
+}
+
+/// One streamed gesture edge: its phase, the cumulative signed drag distance
+/// it reports, and its exit velocity (nonzero only on the end edge).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct SwipeStep {
+    pub phase: SwipePhase,
+    pub progress: f64,
+    pub velocity: f64,
+}
+
+/// Cumulative eased fraction of the drag covered `i` edges into the gesture.
+fn eased_ratio(i: usize, total: usize) -> f64 {
+    // Bounded by construction to a two-digit step count; no truncation risk.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the step counts are the bounded constants above"
+    )]
+    let position = f64::from(i as u32) / f64::from(total as u32);
+    position * position * (3.0 - 2.0 * position)
+}
+
+/// Build the streamed gesture for one adjacent-Space switch: a began edge,
+/// eased changed edges sliding the Space toward the target at the real
+/// reporting cadence, and an end edge that flicks it home — the shape a real
+/// three-finger trackpad swipe produces, which the Dock plays its own slide
+/// animation for. `sign` carries the swipe-direction resolution of the
+/// encoding in use (the legacy field encoding and the macOS 27 HIDEvent
+/// encoding disagree, see the macOS spaces backend); `distance` is the plain
+/// positive drag distance.
+pub(super) fn swipe_timeline(sign: f64, distance: f64) -> Vec<SwipeStep> {
+    debug_assert!(distance.is_finite() && distance > 0.0);
+    debug_assert!(matches!(sign, -1.0 | 1.0));
+    // The began edge reports the first increment; each changed edge the next
+    // cumulative position; the end edge the full distance plus the flick.
+    let total = SWIPE_CHANGES + 1;
+    let progress_at = |i: usize| sign * eased_ratio(i, total) * distance;
+    let mut steps = Vec::with_capacity(total + 1);
+    steps.push(SwipeStep {
+        phase: SwipePhase::Began,
+        progress: progress_at(1),
+        velocity: 0.0,
+    });
+    for i in 2..=total {
+        steps.push(SwipeStep {
+            phase: SwipePhase::Changed,
+            progress: progress_at(i),
+            velocity: 0.0,
+        });
+    }
+    steps.push(SwipeStep {
+        phase: SwipePhase::Ended,
+        progress: sign * distance,
+        velocity: sign * SWIPE_EXIT_SPEED,
+    });
+    steps
+}
+
 /// One native transaction owns its observer and monotonic start time.
 pub(super) trait Backend {
     fn state(&mut self) -> Result<SpaceState, Failure>;
     /// Finish allocation and cursor checks before committing the gate. Never
     /// put native preparation inside the committed, non-cancellable output.
+    /// `emit` posts the began edge only; this method then streams the rest of
+    /// the gesture before returning, so the confirmation loop starts after
+    /// the full timeline.
     fn post(&mut self, direction: Direction, gate: PostGate) -> Result<(), Failure>;
     fn elapsed(&self) -> Duration;
     /// Wake on a notification or the deadline, without losing notifications
@@ -159,8 +256,10 @@ impl PostGate {
         )
     }
 
-    /// Only the two post calls belong in `emit`: no allocation, state queries,
-    /// retries, or cancellation checks between the balanced phases.
+    /// Only the opening (began) post call belongs in `emit`: no allocation,
+    /// state queries, retries, or cancellation checks between edges. The
+    /// remaining streamed gesture runs after `emit` returns, on the
+    /// dedicated worker thread, once the blocker has been released.
     pub(super) fn commit(self, emit: impl FnOnce()) -> Result<(), Failure> {
         if Instant::now() >= self.control.deadline {
             self.control.cancel();
@@ -188,8 +287,9 @@ impl PostWait {
             if self.control.cancel() {
                 return Err(Failure::TimedOut);
             }
-            // Posting won the race. Do not release later actions before both
-            // native calls return; a second timeout would allow a late swipe.
+            // Posting won the race. Do not release later actions before the
+            // committed began post returns; a second timeout would allow a
+            // late swipe.
             let _ = self.receive.recv();
         }
         // Disconnection is cancellation/worker exit, not evidence of success.

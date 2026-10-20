@@ -75,6 +75,34 @@ fn neighbors_use_display_order_not_numeric_ids_and_do_not_wrap() {
 }
 
 #[test]
+fn swipe_timeline_streams_eased_progress_and_claims_the_switch() {
+    for sign in [-1.0_f64, 1.0] {
+        let distance = 750.0_f64;
+        let steps = swipe_timeline(sign, distance);
+        assert_eq!(steps.len(), SWIPE_CHANGES + 2);
+        // A began edge, eased changed edges, then the end edge that claims.
+        assert_eq!(steps[0].phase, SwipePhase::Began);
+        assert_eq!(steps[0].phase.code(), 1);
+        for step in &steps[1..steps.len() - 1] {
+            assert_eq!(step.phase, SwipePhase::Changed);
+            assert_eq!(step.phase.code(), 2);
+            assert_eq!(step.velocity.to_bits(), 0.0_f64.to_bits());
+        }
+        let ended = steps[steps.len() - 1];
+        assert_eq!(ended.phase, SwipePhase::Ended);
+        assert_eq!(ended.phase.code(), 4);
+        assert_eq!(ended.progress.to_bits(), (sign * distance).to_bits());
+        assert_eq!(ended.velocity.to_bits(), (sign * SWIPE_EXIT_SPEED).to_bits());
+        // Progress strictly eases toward the target from a first increment.
+        let mut previous = 0.0_f64;
+        for step in &steps[..steps.len() - 1] {
+            assert!(step.progress * sign > previous, "progress did not ease: {step:?}");
+            previous = step.progress * sign;
+        }
+    }
+}
+
+#[test]
 fn boundary_or_invalid_snapshot_never_posts() {
     let mut invalid = state(7);
     invalid.ordered.push(7);
@@ -261,7 +289,10 @@ fn preparation_timeout_cancels_late_output_but_keeps_the_worker_lease() {
 }
 
 #[test]
-fn posting_wins_cancellation_and_acknowledges_only_after_both_phases() {
+fn posting_wins_cancellation_and_acknowledges_after_emit_completes() {
+    // For a real space switch `emit` spans only the began edge and the
+    // remaining gesture streams after `commit` returns; the race semantics
+    // are the same, so a two-call `emit` still models them.
     let deadline = Instant::now() + Duration::from_secs(60);
     let (gate, wait) = PostGate::new(deadline);
     let (events, sequence) = mpsc::channel();
