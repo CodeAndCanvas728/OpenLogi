@@ -22,6 +22,15 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 const SMOOTH_SCROLL_FLAG: u8 = 0x80;
 const SENSITIVITY_MASK: u8 = !SMOOTH_SCROLL_FLAG;
 
+/// Distance multiplier for a wheel tick the side-button hold reinterprets as
+/// horizontal (issue #1053). An unscaled one-tick redirect moves 10 points —
+/// a fraction of the travel the same tick covers as a native vertical event
+/// under the OS's scroll acceleration, which injected events bypass — so the
+/// hold+wheel gesture crawls. 4x makes one detent cover roughly a native
+/// vertical detent's distance; MUST-VERIFY on hardware against the Options+
+/// feel (tune or promote to a setting on report).
+const REDIRECTED_HSCROLL_MULTIPLIER: f64 = 4.0;
+
 #[derive(Clone, Copy)]
 struct ScrollPreferenceSnapshot {
     smooth_scroll: bool,
@@ -214,12 +223,14 @@ impl ScrollInputHandle {
     /// thread: a vertical wheel tick the side-button hold reinterpreted as
     /// horizontal (issue #1053).
     ///
-    /// Unlike [`Self::try_hook_scroll`], main-wheel sensitivity never applies
-    /// (it scales vertical distance only) and a pure-horizontal impulse is
-    /// always meaningful work — not a native pass-through candidate — so with
-    /// smoothing disabled the impulse goes out direct instead of being
-    /// rejected. Pixel input, zero/non-finite distance, a full queue, or an
-    /// unavailable worker are rejected so the callback fails open.
+    /// The horizontal distance is scaled by
+    /// [`REDIRECTED_HSCROLL_MULTIPLIER`]; the main-wheel sensitivity never
+    /// applies (it scales vertical distance only) and a pure-horizontal
+    /// impulse is always meaningful work — not a native pass-through
+    /// candidate — so with smoothing disabled the impulse goes out direct
+    /// instead of being rejected. Pixel input, zero/non-finite distance, a
+    /// full queue, or an unavailable worker are rejected so the callback
+    /// fails open.
     #[must_use]
     pub fn try_hook_redirected_scroll(&self, delta: ScrollDelta) -> bool {
         if !self.accepting.load(Ordering::Acquire) {
@@ -231,12 +242,15 @@ impl ScrollInputHandle {
         if impulse.y != 0.0 || impulse.x == 0.0 {
             return false;
         }
+        // The input is pure-horizontal, so scaling both axes multiplies the
+        // horizontal distance alone.
+        let scaled = impulse.scale(REDIRECTED_HSCROLL_MULTIPLIER);
         let output = if self.preferences.smooth_scroll_enabled() {
             ScrollOutputMode::Smooth { at: Instant::now() }
         } else {
             ScrollOutputMode::Direct
         };
-        self.try_enqueue(ScrollSource::current_hook(), impulse, output)
+        self.try_enqueue(ScrollSource::current_hook(), scaled, output)
     }
 
     /// Queue one diverted thumb-wheel impulse from an active HID++ session.
@@ -593,17 +607,23 @@ mod tests {
         assert!(input.try_hook_redirected_scroll(ScrollDelta::wheel_ticks(2.0, 0.0)));
 
         let queued = queued_input(&receiver);
-        assert_eq!(queued.impulse, WheelDelta { x: 2.0, y: 0.0 });
+        assert_eq!(
+            queued.impulse,
+            WheelDelta { x: 2.0 * REDIRECTED_HSCROLL_MULTIPLIER, y: 0.0 }
+        );
         assert!(matches!(queued.output, ScrollOutputMode::Direct));
     }
 
     #[test]
-    fn redirected_horizontal_scroll_does_not_apply_vertical_sensitivity() {
+    fn redirected_horizontal_scroll_scales_but_skips_vertical_sensitivity() {
         let (input, receiver, _controls) = standalone_input(2, preferences(true, 7));
         assert!(input.try_hook_redirected_scroll(ScrollDelta::wheel_ticks(2.0, 0.0)));
 
         let queued = queued_input(&receiver);
-        assert_eq!(queued.impulse, WheelDelta { x: 2.0, y: 0.0 });
+        assert_eq!(
+            queued.impulse,
+            WheelDelta { x: 2.0 * REDIRECTED_HSCROLL_MULTIPLIER, y: 0.0 }
+        );
         assert!(matches!(queued.output, ScrollOutputMode::Smooth { .. }));
     }
 
